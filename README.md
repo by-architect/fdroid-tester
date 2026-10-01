@@ -130,6 +130,11 @@ One line each, nothing else in the file, in `~/.config/fdroid-tester/`:
 
 ## Good to know
 
+- While the script runs, the phone stays awake, so you can put it down between
+  steps. Its own "stay awake while charging" setting comes back at the end, also
+  after Ctrl+C. If the phone is locked, the script waits for you to unlock it
+  before opening the app.
+
 - CI deletes the APKs after a while. If the download fails, ask the author on
   the merge request to re-run the pipeline.
 - The checks inside the APK are hints, not verdicts. An address in the code is

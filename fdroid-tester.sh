@@ -308,7 +308,25 @@ if [ "$NO_PHONE_FOUND" = 1 ]; then
 fi
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+# The phone stays awake while the script runs, so you can put it down between
+# steps; its own "stay awake while charging" setting comes back at the end,
+# also after Ctrl+C or an error.
+STAYON_OLD=""
+keep_awake() {
+  STAYON_OLD="$(ash settings get global stay_on_while_plugged_in)"
+  case "$STAYON_OLD" in
+    ''|*[!0-9]*) STAYON_OLD=""; warn "could not keep the phone awake"; return 0 ;;
+  esac
+  ash svc power stayon true >/dev/null || true
+  ash input keyevent KEYCODE_WAKEUP >/dev/null || true
+  ok "the phone stays awake while this runs (back to its own setting at the end)"
+}
+restore_awake() {
+  [ -n "$STAYON_OLD" ] || return 0
+  "${ADB[@]}" shell settings put global stay_on_while_plugged_in "$STAYON_OLD" >/dev/null 2>&1 || true
+}
+trap 'restore_awake; rm -rf "$WORK"' EXIT
+[ "$NO_DEVICE" = 0 ] && keep_awake
 
 # The JSON, APK and pcap work is in Python: one helper, several subcommands.
 cat > "$WORK/tool.py" <<'PY'
@@ -804,6 +822,18 @@ CRASHED=n; START_PROMPT=""; CONN_START=(); CONN_LATER=(); CAPTURED=n; PCAP_ERR="
 SHOT=""
 if [ "$NO_DEVICE" = 0 ]; then
   step "4. On the phone"
+  # The app and PCAPdroid's prompts would open behind the lock screen.
+  phone_locked() {
+    { ash dumpsys window; ash dumpsys activity activities; } \
+      | grep -qE '(mKeyguardShowing|isKeyguardShowing|mShowingLockscreen|mDreamingLockscreen)=true'
+  }
+  if phone_locked; then
+    ash input keyevent KEYCODE_WAKEUP >/dev/null || true
+    say "unlock the phone — waiting…"
+    for _ in $(seq 1 120); do phone_locked || break; sleep 1; done
+    if phone_locked; then warn "the phone still looks locked — the app may open behind the lock screen"
+    else ok "unlocked"; fi
+  fi
   if [ -n "$(ash pm path "$APPID")" ]; then
     warn "$APPID is already installed"
     if confirm "Uninstall it first, for a clean first start? (its data is deleted)" y; then
