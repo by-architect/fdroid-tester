@@ -1034,7 +1034,7 @@ if [ "$HAS_INTERNET" = 1 ]; then
 fi
 
 say "${B}Language${R}"
-yns Q_EN       "Is it usable in English?" "$HAS_EN"
+yns Q_EN       "Is it usable in English?" y
 
 if [ "$VT_OK" = s ]; then
   say "${B}Security scan${R}"
@@ -1042,6 +1042,20 @@ if [ "$VT_OK" = s ]; then
   act "if VirusTotal does not know the file, upload ${APK##*/} there and wait for the scan"
   yns VT_OK "Do all or most scanners say it is clean?" y
 fi
+
+# Free text for what the boxes do not cover: one line after another, an empty
+# line ends it. It goes into the report between the checklist and the details.
+say "${B}Anything else${R}"
+printf '   %sIs there anything you want to add to the report?%s\n' "$B" "$R" >&2
+note "type it line by line, then Enter on an empty line — or just Enter to skip"
+TESTER_NOTES=""
+while :; do
+  printf '   > ' >&2
+  readline line
+  [ -z "$line" ] && break
+  TESTER_NOTES="$TESTER_NOTES$line"$'\n'
+done
+[ -n "$TESTER_NOTES" ] && ok "added to the report"
 
 # ================================================================ 6. report
 box() {  # box <condition y|n|s> <text> — ticked when the condition is y
@@ -1086,6 +1100,12 @@ REPORT="$OUT/report.md"
   printf '\n</td>\n</tr>\n<tr>\n<td>Security Scan</td>\n<td>\n\n'
   box "$VT_OK" "All or most vendors on VirusTotal or similar scanning services indicate the app is benign."
   printf '\n</td>\n</tr>\n</tbody>\n</table>\n\n'
+  if [ -n "$TESTER_NOTES" ]; then
+    # two trailing spaces keep each line on its own line in Markdown
+    printf '**Notes from the tester:**\n\n'
+    printf '%s' "$TESTER_NOTES" | sed 's/$/  /'
+    printf '\n'
+  fi
 
   printf '<details>\n<summary>Details</summary>\n\n'
   printf -- '- APK: `%s` (sha256 `%s`)\n' "${APK##*/}" "$SHA256"

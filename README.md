@@ -42,7 +42,8 @@ so you can spend your time actually using the app.
    Then you use the app, and it lists every server contacted while you did.
 5. **Questions**: asks what only a person can tell. Does it work, do the
    features exist, is the icon its own, are there extra terms to accept, is
-   there English, do links open inside the app?
+   there English, do links open inside the app? At the end you can add your
+   own notes, which go into the report as "Notes from the tester".
 6. **Report**: writes `report.md` in the wiki's report template, with the
    boxes already ticked from what it found, plus a details section with the
    evidence.
