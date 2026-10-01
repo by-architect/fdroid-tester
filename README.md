@@ -125,9 +125,14 @@ One line each, nothing else in the file, in `~/.config/fdroid-tester/`:
 
 - `pcapdroid-api-key`: PCAPdroid starts without the prompt on the phone.
   Create the key in PCAPdroid → Settings → Control permissions → menu.
-- `virustotal-api-key`: the VirusTotal result for the APK's hash goes into the
-  report. Without it, the report has a link to check by hand. Only the hash is
-  sent; the APK itself is not uploaded.
+- `virustotal-api-key`: not needed. Without it, the security question opens
+  VirusTotal's page for the APK in your browser, so you just look and answer
+  (if VirusTotal does not know the file yet, drag the APK onto the page; the
+  script prints its path). If you already have a VirusTotal API key, put it
+  here and the scan runs by itself in the background while you test the app:
+  the APK is looked up by its hash, uploaded after a yes if it is unknown, and
+  Enter skips the scan if it is still running when the questions come.
+  Uploaded files are shared with VirusTotal's partners.
 
 ## Good to know
 

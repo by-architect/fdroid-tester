@@ -63,7 +63,9 @@ capture into <appid>_<versionCode>-review/ next to it.
 Optional keys (one line each, nothing else in the file):
   $CONF/pcapdroid-api-key   PCAPdroid starts without asking on the phone
                             (PCAPdroid → Settings → Control permissions → menu)
-  $CONF/virustotal-api-key  the VirusTotal result goes straight into the report
+  $CONF/virustotal-api-key  only if you already have one: VirusTotal is then
+                            scanned in the background instead of opened in
+                            your browser
 EOF
 }
 
@@ -154,6 +156,16 @@ yns() {
     case "$a" in [yY]*) a=y; break ;; [nN]*) a=n; break ;; [sS]*) a=s; break ;; esac
   done
   printf -v "$__var" '%s' "$a"
+}
+
+open_url() {  # open_url <url> — in the default browser; false when there is none
+  case "$(uname -s)" in
+    Darwin) open "$1" >/dev/null 2>&1 & return 0 ;;
+  esac
+  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || have wslview || return 1
+  if have xdg-open; then xdg-open "$1" >/dev/null 2>&1 & return 0; fi
+  if have wslview; then wslview "$1" >/dev/null 2>&1 & return 0; fi
+  return 1
 }
 
 pause() { printf '   %s➜ %s%s ' "$BLU" "$1" "$R" >&2; local _; readline _; }
@@ -300,8 +312,8 @@ for e in "${VISUAL:-}" "${EDITOR:-}" nano vi; do
 done
 if [ -n "$EDIT_CMD" ]; then row ok editor "$EDIT_CMD"
 else row warn editor "none found — set EDITOR to edit the report before posting"; fi
-if [ -s "$CONF/virustotal-api-key" ]; then row ok VirusTotal "API key set"
-else row info VirusTotal "no API key — the report gets a link to check by hand"; fi
+if [ -s "$CONF/virustotal-api-key" ]; then row ok VirusTotal "API key set — scanned automatically"
+else row ok VirusTotal "opens in your browser at the end — nothing to set up"; fi
 
 if [ "$FAILS" -gt 0 ]; then
   [ "$CHECK_ONLY" = 1 ] && die "$FAILS check(s) failed"
@@ -333,7 +345,7 @@ restore_awake() {
   [ -n "$STAYON_OLD" ] || return 0
   "${ADB[@]}" shell settings put global stay_on_while_plugged_in "$STAYON_OLD" >/dev/null 2>&1 || true
 }
-trap 'restore_awake; rm -rf "$WORK"' EXIT
+trap '[ -n "${VT_PID:-}" ] && kill "$VT_PID" 2>/dev/null; restore_awake; rm -rf "$WORK"' EXIT
 [ "$NO_DEVICE" = 0 ] && keep_awake
 
 # The JSON, APK and pcap work is in Python: one helper, several subcommands.
@@ -602,9 +614,20 @@ def cmd_pcap(path, t_launch, t_end, trackers):
 
 # --- vt <response.json>
 def cmd_vt(path):
-    d = json.load(open(path))
-    s = d.get("data", {}).get("attributes", {}).get("last_analysis_stats", {})
-    out("VT", s.get("malicious", 0), s.get("suspicious", 0), s.get("harmless", 0) + s.get("undetected", 0))
+    a = json.load(open(path)).get("data", {}).get("attributes", {})
+    if "last_analysis_stats" in a:        # a file report: already scanned
+        st, status = a["last_analysis_stats"], "completed"
+    else:                                 # an analysis: queued, in-progress, completed
+        st, status = a.get("stats", {}), a.get("status", "queued")
+    out("VT", status, st.get("malicious", 0), st.get("suspicious", 0),
+        st.get("harmless", 0) + st.get("undetected", 0))
+
+# --- jget <file> <key path…>: one value out of a JSON file
+def cmd_jget(path, *keys):
+    v = json.load(open(path))
+    for k in keys:
+        v = v.get(k, {}) if isinstance(v, dict) else {}
+    print(v if isinstance(v, str) else "")
 
 # --- cats <metadata.yml>
 def cmd_cats(path):
@@ -619,7 +642,7 @@ def cmd_cats(path):
     print(", ".join(cats))
 
 {"mr": cmd_mr, "cq": cmd_cq, "static": cmd_static, "pcap": cmd_pcap,
- "vt": cmd_vt, "cats": cmd_cats}[sys.argv[1]](*sys.argv[2:])
+ "vt": cmd_vt, "jget": cmd_jget, "cats": cmd_cats}[sys.argv[1]](*sys.argv[2:])
 PY
 tool() { python3 "$WORK/tool.py" "$@"; }
 
@@ -794,24 +817,95 @@ if [ "${#S_HOSTS[@]}" -gt 0 ]; then
   [ "${#S_HOSTS[@]}" -gt 40 ] && note "  …and $(( ${#S_HOSTS[@]} - 40 )) more"
 fi
 
-# ---- VirusTotal (a hash lookup: the APK itself is not uploaded)
+# ---- VirusTotal
+# Without anything to set up, the security question opens VirusTotal's page for
+# this APK in the browser. Someone who already has a VirusTotal API key gets it
+# fully automatic: the APK is looked up by its hash and, if unknown, uploaded
+# (after a yes) and scanned in the background. Uploads are shared with
+# VirusTotal's partners — these APKs are public CI downloads anyway. A free key
+# allows 4 requests a minute, so the scan is checked every 20 seconds.
 VT_LINK="https://www.virustotal.com/gui/file/$SHA256"
-VT_RESULT=""
-if [ -s "$CONF/virustotal-api-key" ]; then
-  code="$(curl -sS -o "$WORK/vt.json" -w '%{http_code}' \
-          -H "x-apikey: $(head -1 "$CONF/virustotal-api-key")" \
-          "https://www.virustotal.com/api/v3/files/$SHA256" || true)"
-  if [ "$code" = 200 ]; then
-    IFS=$'\t' read -r _ VT_MAL VT_SUS VT_OK < <(tool vt "$WORK/vt.json")
-    VT_RESULT="$VT_MAL malicious, $VT_SUS suspicious, $VT_OK clean"
-    [ "$VT_MAL" = 0 ] && ok "VirusTotal: $VT_RESULT" || warn "VirusTotal: $VT_RESULT"
-  elif [ "$code" = 404 ]; then
-    note "VirusTotal has not seen this APK — upload it on the website: $VT_LINK"
-  else
-    warn "VirusTotal lookup failed (HTTP $code)"
+VT_API="https://www.virustotal.com/api/v3"
+VT_KEY_FILE="$CONF/virustotal-api-key"
+VT_RESULT=""; VT_MAL=""; VT_STATUS=""
+VT_KEY=""; [ -s "$VT_KEY_FILE" ] && VT_KEY="$(head -1 "$VT_KEY_FILE" | tr -d '[:space:]')"
+vt_get() {  # vt_get <api path> — JSON to $WORK/vt.json, prints the HTTP code
+  curl -sS -m 60 -o "$WORK/vt.json" -w '%{http_code}' -H "x-apikey: $VT_KEY" "$VT_API/$1" 2>/dev/null || true
+}
+vt_read() { IFS=$'\t' read -r _ VT_STATUS VT_MAL VT_SUS VT_CLEAN < <(tool vt "$WORK/vt.json"); }
+vt_show() {
+  VT_RESULT="$VT_MAL malicious, $VT_SUS suspicious, $VT_CLEAN clean"
+  if [ "$VT_MAL" = 0 ]; then ok "VirusTotal: $VT_RESULT"; else warn "VirusTotal: $VT_RESULT"; fi
+}
+# vt_scan — upload the APK and wait for its scan. It runs in the background
+# while you test the app, says nothing, and leaves one line in vt-result:
+# the scan's "VT …" line, or "ERR <why>".
+vt_scan() {
+  local url="$VT_API/files" aid code
+  if [ "$(wc -c < "$APK")" -gt 33554432 ]; then     # over 32 MB: a one-time upload URL
+    [ "$(vt_get files/upload_url)" = 200 ] && url="$(tool jget "$WORK/vt.json" data)"
   fi
+  code="$(curl -sS -m 900 -o "$WORK/vtup.json" -w '%{http_code}' -H "x-apikey: $VT_KEY" \
+          -F "file=@$APK" "$url" 2>/dev/null || true)"
+  aid="$(tool jget "$WORK/vtup.json" data id 2>/dev/null || true)"
+  if [ "$code" != 200 ] || [ -z "$aid" ]; then
+    printf 'ERR\tthe upload failed (HTTP %s)\n' "$code" > "$WORK/vt-result"; return 0
+  fi
+  for _ in $(seq 1 45); do                          # 20 s apart, up to 15 minutes
+    sleep 20
+    [ "$(vt_get "analyses/$aid")" = 200 ] || continue
+    if tool vt "$WORK/vt.json" > "$WORK/vt-result.part" \
+       && grep -q $'^VT\tcompleted\t' "$WORK/vt-result.part"; then
+      mv "$WORK/vt-result.part" "$WORK/vt-result"; return 0
+    fi
+  done
+  printf 'ERR\tthe scan took longer than 15 minutes\n' > "$WORK/vt-result"
+}
+# vt_collect — pick up the background scan's result. If it is still running,
+# wait for it, or skip it with Enter: the scan goes on at VirusTotal, and the
+# security question is asked by hand instead.
+vt_collect() {
+  local rc kind a b c d
+  [ -n "$VT_PID" ] || return 0
+  if [ ! -s "$WORK/vt-result" ] && kill -0 "$VT_PID" 2>/dev/null; then
+    say "VirusTotal is still scanning ${APK##*/}…"
+    act "press Enter to skip it and check the link by hand, or just wait"
+    while kill -0 "$VT_PID" 2>/dev/null; do
+      if read -r -t 5 _; then
+        kill "$VT_PID" 2>/dev/null || true; wait "$VT_PID" 2>/dev/null || true
+        VT_PID=""; note "skipped — the scan goes on at $VT_LINK"; return 0
+      else
+        rc=$?; [ "$rc" -gt 128 ] || sleep 5        # no terminal to read: just wait
+      fi
+    done
+  fi
+  wait "$VT_PID" 2>/dev/null || true; VT_PID=""
+  if [ -s "$WORK/vt-result" ]; then
+    IFS=$'\t' read -r kind a b c d < "$WORK/vt-result"
+    if [ "$kind" = VT ]; then VT_STATUS="$a"; VT_MAL="$b"; VT_SUS="$c"; VT_CLEAN="$d"; vt_show
+    else warn "VirusTotal: $a — see $VT_LINK"; fi
+  else
+    warn "the VirusTotal scan stopped — see $VT_LINK"
+  fi
+}
+VT_PID=""
+if [ -n "$VT_KEY" ]; then
+  code="$(vt_get "files/$SHA256")"
+  case "$code" in
+    200) vt_read; [ "$VT_STATUS" = completed ] && vt_show ;;
+    404) if confirm "VirusTotal has not seen this APK — upload it for a scan?" y; then
+           vt_scan </dev/null >/dev/null 2>&1 &
+           VT_PID=$!
+           ok "uploading and scanning in the background — carry on, the result comes in later"
+         else
+           note "not uploaded — you can check it by hand: $VT_LINK"
+         fi ;;
+    401|403) warn "VirusTotal refused the API key — fix $VT_KEY_FILE" ;;
+    429) warn "VirusTotal's rate limit is reached (free key: 4 a minute, 500 a day)" ;;
+    *)   warn "VirusTotal lookup failed (HTTP $code)" ;;
+  esac
 else
-  note "VirusTotal: $VT_LINK (upload the APK there if it is unknown)"
+  note "VirusTotal: checked at the end, in your browser"
 fi
 
 # ---- categories, from the metadata in the MR
@@ -987,7 +1081,8 @@ if [ "$CAPTURED" = y ] && [ -z "$PCAP_ERR" ]; then
 fi
 [ "${#S_TRACKERS[@]}" -gt 0 ] && NET_TRACK=y
 MSTORAGE=y; case " ${P_SPECIAL[*]} " in *" MANAGE_EXTERNAL_STORAGE "*) MSTORAGE=s ;; esac
-VT_OK=s; [ -n "$VT_RESULT" ] && { [ "${VT_MAL:-1}" = 0 ] && VT_OK=y || VT_OK=n; }
+vt_collect
+VT_OK=s; [ -n "$VT_RESULT" ] && [ "$VT_MAL" = 0 ] && VT_OK=y
 
 [ "$NO_DEVICE" = 1 ] && act "no phone in this run — answer from what you saw on a device, or s to skip"
 
@@ -1038,9 +1133,17 @@ yns Q_EN       "Is it usable in English?" y
 
 if [ "$VT_OK" = s ]; then
   say "${B}Security scan${R}"
-  act "open $VT_LINK"
-  act "if VirusTotal does not know the file, upload ${APK##*/} there and wait for the scan"
-  yns VT_OK "Do all or most scanners say it is clean?" y
+  if [ -n "$VT_RESULT" ]; then
+    # a scanner or two flagging an open source app is usually a false alarm
+    note "VirusTotal: $VT_RESULT — $VT_LINK"
+    yns VT_OK "Do all or most scanners say it is clean?" "$([ "$VT_MAL" -le 2 ] && echo y || echo n)"
+  else
+    if open_url "$VT_LINK"; then act "VirusTotal is open in your browser"
+    else act "open $VT_LINK"; fi
+    act "if it says the file is unknown, drag this file onto the page:"
+    note "  $APK"
+    yns VT_OK "Do all or most scanners say it is clean?" y
+  fi
 fi
 
 # Free text for what the boxes do not cover: one line after another, an empty
