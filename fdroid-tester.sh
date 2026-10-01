@@ -26,6 +26,11 @@
 
 set -eu
 
+# Everything below sits in one { … } block, so bash reads the whole file before
+# running any of it: editing the script while a run waits for Enter cannot then
+# break that run.
+{
+
 VERSION="1.0.0"
 MR_REPO="fdroid/fdroiddata"
 API="https://gitlab.com/api/v4"
@@ -78,7 +83,6 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-[ -n "$MR_ARG" ] || [ "$CHECK_ONLY" = 1 ] || { usage >&2; exit 2; }
 
 # ---------------------------------------------------------------- presentation
 if [ -t 1 ]; then
@@ -94,6 +98,28 @@ warn()  { printf '   %s! %s%s\n' "$YLW" "$*" "$R"; }
 ok()    { printf '   %s✓ %s%s\n' "$GRN" "$*" "$R"; }
 die()   { printf '\n%sERROR: %s%s\n' "$RED" "$*" "$R" >&2; exit 1; }
 have()  { command -v "$1" >/dev/null 2>&1; }
+
+# Run with no link: say where to get one, rather than print the options.
+if [ -z "$MR_ARG" ] && [ "$CHECK_ONLY" = 0 ]; then
+  cat <<EOF
+
+  ${B}Which app do you want to test?${R}
+
+  1. Open F-Droid's list of new apps waiting for a tester:
+     ${CYN}https://gitlab.com/fdroid/fdroiddata/-/merge_requests/?sort=created_asc&state=opened&label_name[]=review-requested${R}
+
+  2. Pick one and copy its link from the address bar. It looks like:
+     ${CYN}https://gitlab.com/fdroid/fdroiddata/-/merge_requests/38458${R}
+
+  3. Run this script with that link:
+     ${B}$0 https://gitlab.com/fdroid/fdroiddata/-/merge_requests/38458${R}
+
+  ${DIM}$0 --check   checks your tools and phone first
+  $0 --help    all the options${R}
+
+EOF
+  exit 0
+fi
 
 readline() {  # readline VAR — false on EOF
   IFS= read -r "$1" && return 0
@@ -154,6 +180,15 @@ sha256() {
 
 ADB=(adb); [ -n "$SERIAL" ] && ADB+=(-s "$SERIAL")
 ash() { "${ADB[@]}" shell "$@" 2>/dev/null | tr -d '\r'; }
+
+# PCAPdroid records in its CaptureService: running means recording.
+capture_running() { ash dumpsys activity services "$PCAP_PKG" | grep -q 'CaptureService'; }
+capture_stop() {  # ask PCAPdroid to stop, and wait until it has closed the file
+  ash am start -n "$PCAP_PKG/.activities.CaptureCtrl" -e action stop "${KEY[@]}" >/dev/null || true
+  for _ in $(seq 1 15); do capture_running || return 0; sleep 1; done
+  return 1
+}
+KEY=()
 DEV_ABIS=""; DEV_SDK=""; DEV_DESC=""; PCAP_OK=0; CAN_POST=0; EDIT_CMD=""; NO_PHONE_FOUND=0
 
 step "0. Checks"
@@ -474,8 +509,10 @@ def cmd_pcap(path, t_launch, t_end, trackers):
     t_launch, t_end = float(t_launch), float(t_end)
     _, net_sigs = load_trackers(trackers)
     data = open(path, "rb").read()
+    if not data:
+        out("NONE", "no packets"); return     # the header comes with the first packet
     if len(data) < 24:
-        out("ERROR", "the capture is empty"); return
+        out("ERROR", "the capture file is cut short"); return
     magic = data[:4]
     if magic == b"\x0a\x0d\x0d\x0a":
         out("ERROR", "pcapng is not supported — switch PCAPdroid back to plain PCAP"); return
@@ -788,15 +825,25 @@ if [ "$NO_DEVICE" = 0 ]; then
     if [ "$PCAP_OK" = 1 ]; then
       KEY=(); [ -s "$CONF/pcapdroid-api-key" ] && KEY=(-e api_key "$(head -1 "$CONF/pcapdroid-api-key")")
       ash rm -f "/sdcard/Download/PCAPdroid/$PCAP_NAME" || true
+      if capture_running; then
+        warn "PCAPdroid is already recording — stopping it, so this run gets its own capture"
+        capture_stop
+      fi
       ash am start -n "$PCAP_PKG/.activities.CaptureCtrl" -e action start \
         -e pcap_dump_mode pcap_file -e pcap_name "$PCAP_NAME" -e app_filter "$APPID" \
         -e block_quic always -e auto_block_private_dns true "${KEY[@]}" >/dev/null
-      CAPTURED=y
       if [ "${#KEY[@]}" -eq 0 ]; then
         note "on the phone: allow PCAPdroid's control prompt (and the VPN prompt, the first time)"
         note "tip: an API key in $CONF/pcapdroid-api-key skips the first prompt (see --help)"
       fi
-      pause "Press Enter once PCAPdroid shows the capture running…"
+      say "waiting for PCAPdroid to start recording…"
+      for _ in $(seq 1 90); do capture_running && break; sleep 1; done
+      if capture_running; then
+        CAPTURED=y; ok "PCAPdroid is recording"
+      else
+        warn "PCAPdroid did not start within 90 seconds"
+        confirm "Carry on without the network check?" y || die "start PCAPdroid once by hand, then run again"
+      fi
     else
       warn "no network check — PCAPdroid is missing or too old (see the checks at the top)"
     fi
@@ -858,8 +905,7 @@ EOF
   fi
 
   if [ "$CAPTURED" = y ]; then
-    ash am start -n "$PCAP_PKG/.activities.CaptureCtrl" -e action stop "${KEY[@]}" >/dev/null || true
-    sleep 3
+    capture_stop || warn "PCAPdroid is still recording — stop it in the app; the file may be cut short"
     if "${ADB[@]}" pull "/sdcard/Download/PCAPdroid/$PCAP_NAME" "$OUT/traffic.pcap" >/dev/null 2>&1; then
       ash rm -f "/sdcard/Download/PCAPdroid/$PCAP_NAME" || true
       while IFS=$'\t' read -r kind a b c; do
@@ -868,15 +914,18 @@ EOF
           ERROR) PCAP_ERR="$a" ;;
         esac
       done < <(tool pcap "$OUT/traffic.pcap" "$T_LAUNCH" "$T_END" "$TRK")
-      [ -n "$PCAP_ERR" ] && warn "$PCAP_ERR"
-      if [ "${#CONN_START[@]}" -gt 0 ]; then
-        warn "connections in the first $WATCH seconds:"; printf '%s\n' "${CONN_START[@]}" | sed 's/^/       /'
-      else ok "no connections on start"; fi
-      if [ "${#CONN_LATER[@]}" -gt 0 ]; then
-        say "connections while you used it:"; printf '%s\n' "${CONN_LATER[@]}" | sed 's/^/       /'
+      if [ -n "$PCAP_ERR" ]; then
+        warn "$PCAP_ERR — the network questions below are asked instead"
+      else
+        if [ "${#CONN_START[@]}" -gt 0 ]; then
+          warn "connections in the first $WATCH seconds:"; printf '%s\n' "${CONN_START[@]}" | sed 's/^/       /'
+        else ok "no connections on start"; fi
+        if [ "${#CONN_LATER[@]}" -gt 0 ]; then
+          say "connections while you used it:"; printf '%s\n' "${CONN_LATER[@]}" | sed 's/^/       /'
+        fi
+        [ "${#CONN_START[@]}" -eq 0 ] && [ "${#CONN_LATER[@]}" -eq 0 ] \
+          && warn "no traffic at all — the author may be able to drop the INTERNET permission"
       fi
-      [ "${#CONN_START[@]}" -eq 0 ] && [ "${#CONN_LATER[@]}" -eq 0 ] && [ -z "$PCAP_ERR" ] \
-        && warn "no traffic at all — the author may be able to drop the INTERNET permission"
     else
       CAPTURED=n
       warn "could not fetch the capture from Download/PCAPdroid/ — was it running?"
@@ -1058,3 +1107,6 @@ fi
 if [ "$NO_DEVICE" = 0 ] && [ "$KEEP" = 0 ]; then
   confirm "Remove the app from the phone now?" y && "${ADB[@]}" uninstall "$APPID" >/dev/null && ok "removed"
 fi
+
+exit 0
+}

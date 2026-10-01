@@ -94,6 +94,8 @@ the apps you test away from your own data.
   --version      print the version
 ```
 
+Run it without a link and it tells you where to find one.
+
 Merge requests waiting for a tester, oldest first:
 [review-requested](https://gitlab.com/fdroid/fdroiddata/-/merge_requests/?sort=created_asc&state=opened&label_name[]=review-requested).
 
