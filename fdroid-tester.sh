@@ -85,13 +85,21 @@ while [ $# -gt 0 ]; do
 done
 
 # ---------------------------------------------------------------- presentation
+# Section titles in a soft muted teal; what you have to do yourself (on the
+# phone, in the browser) in blue, so it stands out from what the script says.
 if [ -t 1 ]; then
   B=$'\033[1m'; DIM=$'\033[2m'; R=$'\033[0m'
   GRN=$'\033[32m'; YLW=$'\033[33m'; RED=$'\033[31m'; CYN=$'\033[36m'
+  if [ "$(tput colors 2>/dev/null || echo 8)" -ge 256 ]; then
+    TTL=$'\033[38;5;109m'; BLU=$'\033[1;38;5;75m'
+  else
+    TTL=$'\033[36m'; BLU=$'\033[1;34m'
+  fi
 else
-  B=""; DIM=""; R=""; GRN=""; YLW=""; RED=""; CYN=""
+  B=""; DIM=""; R=""; GRN=""; YLW=""; RED=""; CYN=""; TTL=""; BLU=""
 fi
-step()  { printf '\n%s━━ %s %s\n' "$B$CYN" "$*" "$R"; }
+step()  { printf '\n%s━━ %s%s\n' "$TTL" "$*" "$R"; }
+act()   { printf '   %s➜ %s%s\n' "$BLU" "$*" "$R"; }
 say()   { printf '   %s\n' "$*"; }
 note()  { printf '   %s%s%s\n' "$DIM" "$*" "$R"; }
 warn()  { printf '   %s! %s%s\n' "$YLW" "$*" "$R"; }
@@ -148,7 +156,7 @@ yns() {
   printf -v "$__var" '%s' "$a"
 }
 
-pause() { printf '   %s%s%s ' "$B" "$1" "$R" >&2; local _; readline _; }
+pause() { printf '   %s➜ %s%s ' "$BLU" "$1" "$R" >&2; local _; readline _; }
 
 # ================================================================ 0. checks
 # Everything a run leans on, checked before anything is downloaded. A missing
@@ -829,7 +837,7 @@ if [ "$NO_DEVICE" = 0 ]; then
   }
   if phone_locked; then
     ash input keyevent KEYCODE_WAKEUP >/dev/null || true
-    say "unlock the phone — waiting…"
+    act "unlock the phone — waiting…"
     for _ in $(seq 1 120); do phone_locked || break; sleep 1; done
     if phone_locked; then warn "the phone still looks locked — the app may open behind the lock screen"
     else ok "unlocked"; fi
@@ -863,7 +871,7 @@ if [ "$NO_DEVICE" = 0 ]; then
         -e pcap_dump_mode pcap_file -e pcap_name "$PCAP_NAME" -e app_filter "$APPID" \
         -e block_quic always -e auto_block_private_dns true "${KEY[@]}" >/dev/null
       if [ "${#KEY[@]}" -eq 0 ]; then
-        note "on the phone: allow PCAPdroid's control prompt (and the VPN prompt, the first time)"
+        act "on the phone: allow PCAPdroid's control prompt (and the VPN prompt, the first time)"
         note "tip: an API key in $CONF/pcapdroid-api-key skips the first prompt (see --help)"
       fi
       say "waiting for PCAPdroid to start recording…"
@@ -884,7 +892,7 @@ if [ "$NO_DEVICE" = 0 ]; then
   if "${ADB[@]}" shell monkey -p "$APPID" -c android.intent.category.LAUNCHER 1 2>&1 | grep -q 'No activities found'; then
     warn "the app has no launcher icon to open — open it by hand"
   fi
-  say "watching the first $WATCH seconds — don't touch the phone yet"
+  act "watching the first $WATCH seconds — don't touch the phone yet"
   for _ in $(seq 1 "$WATCH"); do
     sleep 1
     if [ -z "$START_PROMPT" ] && ash dumpsys window | grep -E 'mCurrentFocus=' | grep -q GrantPermissionsActivity; then
@@ -918,12 +926,12 @@ if [ "$NO_DEVICE" = 0 ]; then
   SAYS=""; [ -n "$SUMMARY" ] && SAYS="It says: \"$SUMMARY\""
   cat <<EOF
 
-   ${B}Now use the app.${R} $SAYS
-     - try the main features from its description
+   ${BLU}➜ Now use the app.${R} $SAYS
+     ${BLU}- try the main features from its description
      - deny the optional permissions: does it still work?
      - look for terms to accept, ads, paid unlocks, sign-in walls
      - open links (author, help, donate): browser, or a view inside the app?
-     - look at its settings: language, update checks, online features
+     - look at its settings: language, update checks, online features${R}
 
 EOF
   pause "Press Enter when you are done…"
@@ -981,7 +989,7 @@ fi
 MSTORAGE=y; case " ${P_SPECIAL[*]} " in *" MANAGE_EXTERNAL_STORAGE "*) MSTORAGE=s ;; esac
 VT_OK=s; [ -n "$VT_RESULT" ] && { [ "${VT_MAL:-1}" = 0 ] && VT_OK=y || VT_OK=n; }
 
-[ "$NO_DEVICE" = 1 ] && note "no phone in this run — answer from what you saw on a device, or s to skip"
+[ "$NO_DEVICE" = 1 ] && act "no phone in this run — answer from what you saw on a device, or s to skip"
 
 say "${B}Basic function${R}"
 def=y; [ "$CRASHED" = n ] || def=n
@@ -1030,8 +1038,8 @@ yns Q_EN       "Is it usable in English?" "$HAS_EN"
 
 if [ "$VT_OK" = s ]; then
   say "${B}Security scan${R}"
-  note "open $VT_LINK"
-  note "if VirusTotal does not know the file, upload ${APK##*/} there and wait for the scan"
+  act "open $VT_LINK"
+  act "if VirusTotal does not know the file, upload ${APK##*/} there and wait for the scan"
   yns VT_OK "Do all or most scanners say it is clean?" y
 fi
 
