@@ -885,37 +885,10 @@ EOF
 fi
 
 # ================================================================ 5. questions
+# Every box in the report gets an answer: what this run measured fills its box
+# by itself, and everything else is asked here. "s" still leaves a box
+# unticked and marked (not checked), for when you really could not tell.
 step "5. What you saw"
-if [ "$NO_DEVICE" = 1 ]; then
-  note "no phone: the report leaves the on-device boxes unticked"
-  Q_WORKS=s; Q_FEATURES=s; Q_ICON=s; Q_POLICY=s; Q_TERMS=s; Q_OPTIONAL=s; Q_EN=s; Q_WEBVIEW=s; Q_UPDATE=s
-  [ "$HAS_EN" = y ] && Q_EN=y
-  Q_CATS=s
-else
-  def=y; [ "$CRASHED" = n ] || def=n
-  yns Q_WORKS    "Did it start and work normally?" "$def"
-  yns Q_FEATURES "Do the main features from its description work?" y
-  yns Q_ICON     "Does it have its own icon (not the stock Android/Flutter one)?" y
-  yns Q_POLICY   "Anything against the Inclusion Policy (ads, paid unlock, non-free service)?" n
-  yns Q_TERMS    "Did it ask you to accept terms other than the FOSS license?" n
-  yns Q_OPTIONAL "Does it work without the optional permissions?" y
-  yns Q_EN       "Is it usable in English?" "$HAS_EN"
-  yns Q_WEBVIEW  "Did a link (author page, help…) open inside the app instead of the browser?" n
-  def=n; printf '%s\n' "${CONN_START[@]}" "${CONN_LATER[@]}" | grep -q 'update check' && def=y
-  yns Q_UPDATE   "Does it check for updates by itself?" "$def"
-  Q_CATS=s
-  [ -n "$CATS" ] && yns Q_CATS "Do the categories fit ($CATS)?" y
-fi
-
-# ================================================================ 6. report
-box() {  # box <condition y|n|s> <text> — ticked when the condition is y
-  case "$1" in
-    y) printf -- '- [x] %s\n' "$2" ;;
-    n) printf -- '- [ ] %s\n' "$2" ;;
-    *) printf -- '- [ ] %s _(not checked)_\n' "$2" ;;
-  esac
-}
-neg() { case "$1" in y) echo n ;; n) echo y ;; *) echo s ;; esac; }
 yes_if() { [ "$1" -gt 0 ] && echo y || echo n; }
 
 NET_SEEN=s; NET_START=s; NET_EXTRA=s; NET_TRACK=s
@@ -928,7 +901,70 @@ fi
 [ "${#S_TRACKERS[@]}" -gt 0 ] && NET_TRACK=y
 MSTORAGE=y; case " ${P_SPECIAL[*]} " in *" MANAGE_EXTERNAL_STORAGE "*) MSTORAGE=s ;; esac
 VT_OK=s; [ -n "$VT_RESULT" ] && { [ "${VT_MAL:-1}" = 0 ] && VT_OK=y || VT_OK=n; }
+
+[ "$NO_DEVICE" = 1 ] && note "no phone in this run — answer from what you saw on a device, or s to skip"
+
+say "${B}Basic function${R}"
+def=y; [ "$CRASHED" = n ] || def=n
+yns Q_WORKS    "Did it start and work normally?" "$def"
+yns Q_FEATURES "Do the main features from its description work?" y
+yns Q_ICON     "Does it have its own icon (not the stock Android/Flutter one)?" y
 WORKS="$Q_WORKS"; [ "$CRASHED" = n ] || WORKS=n
+
+say "${B}Policy${R}"
+yns Q_POLICY   "Anything against the Inclusion Policy (ads, paid unlock, non-free service)?" n
+if [ -n "$CATS" ]; then yns Q_CATS "Do the categories fit ($CATS)?" y
+else yns Q_CATS "The metadata sets no categories — is that right?" n; fi
+yns Q_TERMS    "Did it ask you to accept terms other than the FOSS license?" n
+
+say "${B}Permissions${R}"
+yns Q_OPTIONAL "Does it work without the optional permissions?" y
+if [ "$MSTORAGE" = s ]; then
+  note "it asks for MANAGE_EXTERNAL_STORAGE (access to all files)"
+  yns MSTORAGE "Is that really needed — could the system file picker (SAF) not do the job?" n
+fi
+
+NET_UNCLEAR=s; Q_WEBVIEW=s; Q_UPDATE=s
+if [ "$HAS_INTERNET" = 1 ]; then
+  say "${B}Network${R}"
+  [ "$NET_SEEN" = s ] && yns NET_SEEN \
+    "Did the app connect to anything at all?" "$([ "${#S_HOSTS[@]}" -gt 0 ] && echo y || echo n)"
+  [ "$NET_START" = s ] && yns NET_START "Did it connect to anything as soon as it opened, before you did anything?" n
+  def=n; printf '%s\n' "${CONN_START[@]}" "${CONN_LATER[@]}" | grep -q 'update check' && def=y
+  yns Q_UPDATE   "Does it check for updates by itself?" "$def"
+  [ "$NET_EXTRA" = s ] && yns NET_EXTRA "Did it load fonts or icons online, or ping a server just to test the connection?" n
+  [ "$NET_TRACK" = s ] && yns NET_TRACK "Did it contact any tracking or analytics service?" n
+  if [ "$CAPTURED" = y ] && [ -z "$PCAP_ERR" ] && [ $(( ${#CONN_START[@]} + ${#CONN_LATER[@]} )) -gt 0 ]; then
+    note "what it connected to:"
+    printf '%s\n' "${CONN_START[@]}" "${CONN_LATER[@]}" | sed 's/^/       /'
+  elif [ "${#S_HOSTS[@]}" -gt 0 ]; then
+    note "addresses in its code:"
+    printf '%s\n' "${S_HOSTS[@]}" | head -20 | sed 's/^/       /'
+  fi
+  [ -n "$SUMMARY" ] && note "its summary: $SUMMARY"
+  yns NET_UNCLEAR "Is any of these connections not explained in its description?" n
+  yns Q_WEBVIEW  "Did a link (author page, help…) open inside the app instead of the browser?" n
+fi
+
+say "${B}Language${R}"
+yns Q_EN       "Is it usable in English?" "$HAS_EN"
+
+if [ "$VT_OK" = s ]; then
+  say "${B}Security scan${R}"
+  note "open $VT_LINK"
+  note "if VirusTotal does not know the file, upload ${APK##*/} there and wait for the scan"
+  yns VT_OK "Do all or most scanners say it is clean?" y
+fi
+
+# ================================================================ 6. report
+box() {  # box <condition y|n|s> <text> — ticked when the condition is y
+  case "$1" in
+    y) printf -- '- [x] %s\n' "$2" ;;
+    n) printf -- '- [ ] %s\n' "$2" ;;
+    *) printf -- '- [ ] %s _(not checked)_\n' "$2" ;;
+  esac
+}
+neg() { case "$1" in y) echo n ;; n) echo y ;; *) echo s ;; esac; }
 
 REPORT="$OUT/report.md"
 {
@@ -955,7 +991,7 @@ REPORT="$OUT/report.md"
     box "$Q_UPDATE"  "The app checks for update automatically."
     box "$NET_EXTRA" "The app has unnecessary connections (online fonts, icons, connectivity check)."
     box "$NET_TRACK" "Tracking domains connected."
-    box s            "Connections not described clearly in description."
+    box "$NET_UNCLEAR" "Connections not described clearly in description."
     box "$Q_WEBVIEW" "Unnecessary in-app webview presents in the app."
   fi
   printf '\n</td>\n</tr>\n<tr>\n<td>Language Support</td>\n<td>\n\n'
