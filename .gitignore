@@ -1,0 +1,7 @@
+# what a run leaves in the folder it ran from
+*.apk
+*.apk.part
+*-review/
+
+# local drafts
+commit-changes.md
