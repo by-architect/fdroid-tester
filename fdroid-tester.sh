@@ -209,7 +209,7 @@ capture_stop() {  # ask PCAPdroid to stop, and wait until it has closed the file
   return 1
 }
 KEY=()
-DEV_ABIS=""; DEV_SDK=""; DEV_DESC=""; PCAP_OK=0; CAN_POST=0; EDIT_CMD=""; NO_PHONE_FOUND=0
+DEV_ABIS=""; DEV_SDK=""; DEV_DESC=""; PCAP_OK=0; PCAP_NEED=0; CAN_POST=0; EDIT_CMD=""; NO_PHONE_FOUND=0
 
 step "0. Checks"
 
@@ -279,9 +279,9 @@ else
       PCAP_VER="$(printf '%s\n' "$PCAP_INFO" | sed -n 's/.*versionName=\([^ ]*\).*/\1/p' | head -1)"
       PCAP_CODE="$(printf '%s\n' "$PCAP_INFO" | sed -n 's/.*versionCode=\([0-9]*\).*/\1/p' | head -1)"
       if [ -z "$PCAP_CODE" ]; then
-        row warn PCAPdroid "not on the phone — no network check (install $PCAP_PKG from F-Droid)"
+        row warn PCAPdroid "not on the phone — the network check needs it"; PCAP_NEED=1
       elif [ "$PCAP_CODE" -lt 62 ]; then
-        row warn PCAPdroid "$PCAP_VER is too old to be started from here — update it"
+        row warn PCAPdroid "$PCAP_VER is too old to be started from here"; PCAP_NEED=1
       else
         PCAP_OK=1
         if [ -s "$CONF/pcapdroid-api-key" ]; then row ok PCAPdroid "$PCAP_VER, API key set"
@@ -318,6 +318,51 @@ else row ok VirusTotal "opens in your browser at the end — nothing to set up";
 if [ "$FAILS" -gt 0 ]; then
   [ "$CHECK_ONLY" = 1 ] && die "$FAILS check(s) failed"
   die "fix the ✗ lines above, then run again"
+fi
+
+# PCAPdroid missing or too old: F-Droid is the place to get it, but the latest
+# GitHub release can go straight onto the phone from here.
+install_pcapdroid() {
+  local rel url apk pkg out
+  rel="$(curl -fsS -m 30 https://api.github.com/repos/emanuele-f/PCAPdroid/releases/latest 2>/dev/null)" \
+    || { warn "could not reach GitHub"; return 1; }
+  url="$(printf '%s' "$rel" | python3 -c '
+import json, sys
+r = json.load(sys.stdin)
+print(next((a["browser_download_url"] for a in r.get("assets", []) if a["name"].endswith(".apk")), ""))')"
+  [ -n "$url" ] || { warn "the latest PCAPdroid release has no APK"; return 1; }
+  apk="$CACHE/${url##*/}"
+  if [ ! -s "$apk" ]; then
+    say "downloading ${url##*/}"
+    if ! curl -fL --progress-bar -o "$apk.part" "$url"; then
+      rm -f "$apk.part"; warn "the download failed"; return 1
+    fi
+    mv "$apk.part" "$apk"
+  fi
+  pkg="$("$AAPT2" dump badging "$apk" 2>/dev/null | sed -n "s/^package: name='\([^']*\)'.*/\1/p")"
+  if [ "$pkg" != "$PCAP_PKG" ]; then
+    rm -f "$apk"; warn "the download is not PCAPdroid (${pkg:-unreadable}) — not installing it"; return 1
+  fi
+  say "installing ${apk##*/} on the phone…"
+  if ! out="$("${ADB[@]}" install -r "$apk" 2>&1)"; then
+    if printf '%s' "$out" | grep -q UPDATE_INCOMPATIBLE; then
+      warn "the PCAPdroid on the phone is signed by someone else (another store)"
+      confirm "Uninstall it and install the GitHub one? (its settings are lost)" n || return 1
+      "${ADB[@]}" uninstall "$PCAP_PKG" >/dev/null 2>&1 || true
+      out="$("${ADB[@]}" install "$apk" 2>&1)" || { printf '%s\n' "$out" | tail -2 | sed 's/^/     /'; return 1; }
+    else
+      printf '%s\n' "$out" | tail -2 | sed 's/^/     /'; warn "install failed"; return 1
+    fi
+  fi
+  pkg="${apk##*/PCAPdroid_}"; ok "PCAPdroid ${pkg%.apk} installed"
+}
+if [ "$PCAP_NEED" = 1 ]; then
+  printf '\n'
+  say "PCAPdroid records what the app connects to. Install it from F-Droid:"
+  act "https://f-droid.org/packages/$PCAP_PKG/"
+  if confirm "Or install the latest version from GitHub onto the phone now?" y; then
+    install_pcapdroid && PCAP_OK=1 || note "carrying on without the network check"
+  fi
 fi
 if [ "$CHECK_ONLY" = 1 ]; then
   printf '\n'; ok "ready"; exit 0

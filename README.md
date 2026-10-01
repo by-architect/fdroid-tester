@@ -70,7 +70,11 @@ the script turns that part off, and the report leaves those boxes for you.
 
 1. On the phone, turn on Developer options and **USB debugging**, then
    connect it and accept the "Allow USB debugging" prompt.
-2. Install **PCAPdroid** from F-Droid on the phone.
+2. Install **PCAPdroid** from
+   [F-Droid](https://f-droid.org/packages/com.emanuelef.remote_capture/) on the
+   phone. If you skip this, the script offers to install the latest
+   [GitHub release](https://github.com/emanuele-f/PCAPdroid/releases) onto the
+   phone for you.
 3. Log `glab` in to gitlab.com with a token that has the `api` scope:
    `glab auth login --hostname gitlab.com`.
 4. Check everything:
